@@ -1,0 +1,70 @@
+image: docker:20.10.16
+stages:
+  - build
+  - deploy
+
+workflow:
+  rules:
+    - if: $CI_COMMIT_BRANCH == 'main'
+    
+variables:
+  IMAGE_NAME: planner
+
+build:
+  stage: build
+  image: docker:20.10.16-dind
+  #when: manual
+  only:
+    variables:
+      - $CI_COMMIT_BRANCH == 'main'
+  script:
+    - ls
+    - echo "APP_KEYS=97t+ivWg+wP1wdCSHQa8pQ==,REhEGKEb/spffuADaaISsQ==,bIy/30tQ54VtOn5lIGYhDA==,v/jkA+vZN7Jpii5rFcxVow==" > .env
+    - echo "API_TOKEN_SALT=ddmxYngd905IsfZ7TzX87g==" > .env
+    - echo "ADMIN_JWT_SECRET=8maHcls2JeFzzdGIDnG+7g==" > .env
+    - echo "TRANSFER_TOKEN_SALT=3NJTtYYXt4YxVhJeob8ueg==" > .env
+    - echo "JWT_SECRET=9rwIKJO8+2s5omLUqA8Yrw==" > .env
+    - cat .env
+    - docker login "$CI_REGISTRY_IMAGE" --username "$CI_REGISTRY_USER" --password "$CI_REGISTRY_PASSWORD"
+    - echo "$CI_REGISTRY_IMAGE"/"$IMAGE_NAME":"$CI_PIPELINE_ID" 
+    - docker build -t "$CI_REGISTRY_IMAGE"/"$IMAGE_NAME":"$CI_PIPELINE_ID" -f Dockerfile.prod .
+    - docker tag "$CI_REGISTRY_IMAGE"/"$IMAGE_NAME":"$CI_PIPELINE_ID" "$CI_REGISTRY_IMAGE"/"$IMAGE_NAME":latest
+    - docker push --all-tags "$CI_REGISTRY"/"$CI_PROJECT_NAMESPACE"/"$CI_PROJECT_NAME"/"$IMAGE_NAME"
+    - echo "Done !"
+
+deploy:
+  stage: deploy
+  image: 
+    name: hashicorp/terraform:1.0.11
+    entrypoint: [""]
+  #when: manual
+  only:
+    variables:
+      - $CI_COMMIT_BRANCH == 'main'
+  script:
+    - apk update
+    - apk upgrade
+    - wget https://storage.googleapis.com/kubernetes-release/release/v1.24.0/bin/linux/amd64/kubectl
+    - chmod +x ./kubectl
+    - ./kubectl config set-cluster kubernetes --insecure-skip-tls-verify=true --server=$SERVER
+    - ./kubectl config set-credentials planner-sa --token $KUBE_TOKEN # TOKEN ?
+    - ./kubectl config set-context default --user planner-sa --cluster kubernetes
+    - ./kubectl config use-context default 
+    - cd terraform
+    - rm -vRf .terraform
+    - apk add curl
+    - apk add bash
+    - curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash
+    - echo $YC_KEY > key.json
+    - bash
+    - export PATH=$PATH:/root/yandex-cloud/bin/
+    - yc config set service-account-key key.json
+    - yc config set cloud-id $YC_CLOUD_ID
+    - yc config set folder-id $YC_CATALOG_ID
+    - export YC_TOKEN=$(yc iam create-token)
+    - export YC_CLOUD_ID=$(yc config get cloud-id)
+    - export YC_FOLDER_ID=$(yc config get folder-id)
+    - echo $TFRC > ~/.terraformrc
+    - terraform init
+    - terraform apply -auto-approve -var "build_version=$CI_PIPELINE_ID"
+
